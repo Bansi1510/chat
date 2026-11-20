@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { requireAuth, requireSuperAdmin } from '../../middleware/auth';
 import { validate } from '../../middleware/errorHandling';
 import { asyncHandler, ok } from '../../utils/http';
-import { getSettings, updateSettings } from './settings.service';
+import { updateSettings } from './settings.service';
 import { recordAudit } from './audit.service';
 import crypto from 'crypto';
 import { env } from '../../config/env';
