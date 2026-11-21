@@ -13,9 +13,15 @@ export const ScheduledMessagesModal: React.FC = () => {
   const fetchScheduled = async () => {
     try {
       const res = await api.get('/messages/scheduled');
-      setScheduledList(res.data.data);
+      const list = Array.isArray(res.data?.data)
+        ? res.data.data
+        : Array.isArray(res.data)
+        ? res.data
+        : [];
+      setScheduledList(list);
     } catch (err) {
       console.error(err);
+      setScheduledList([]);
     }
   };
 

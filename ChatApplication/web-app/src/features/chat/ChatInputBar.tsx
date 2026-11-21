@@ -91,8 +91,11 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({ socket, replyTo, onC
       formData.append('signature', signature);
       formData.append('folder', folder);
 
-      const isVideo = file.type.startsWith('video/');
-      const uploadType = isVideo ? 'video' : 'image';
+      const uploadType = file.type.startsWith('video/')
+        ? 'video'
+        : file.type.startsWith('image/')
+        ? 'image'
+        : 'auto';
       const uploadUrl = `https://api.cloudinary.com/v1_1/${cloudName}/${uploadType}/upload`;
 
       const uploadRes = await fetch(uploadUrl, { method: 'POST', body: formData });

@@ -52,16 +52,36 @@ export const ChatDetailsDrawer: React.FC<ChatDetailsDrawerProps> = ({ onStartCal
     if (activeTab === 'media') {
       setLoadingContent(true);
       api
-        .get<SharedMediaItem[]>(`/conversations/${activeConvo.id}/media`)
-        .then((res) => setMediaItems(res.data))
-        .catch((err) => console.error(err))
+        .get(`/conversations/${activeConvo.id}/media`)
+        .then((res) => {
+          const list = Array.isArray(res.data?.data)
+            ? res.data.data
+            : Array.isArray(res.data)
+            ? res.data
+            : [];
+          setMediaItems(list);
+        })
+        .catch((err) => {
+          console.error(err);
+          setMediaItems([]);
+        })
         .finally(() => setLoadingContent(false));
     } else if (activeTab === 'docs') {
       setLoadingContent(true);
       api
-        .get<SharedDocumentItem[]>(`/conversations/${activeConvo.id}/documents`)
-        .then((res) => setDocItems(res.data))
-        .catch((err) => console.error(err))
+        .get(`/conversations/${activeConvo.id}/documents`)
+        .then((res) => {
+          const list = Array.isArray(res.data?.data)
+            ? res.data.data
+            : Array.isArray(res.data)
+            ? res.data
+            : [];
+          setDocItems(list);
+        })
+        .catch((err) => {
+          console.error(err);
+          setDocItems([]);
+        })
         .finally(() => setLoadingContent(false));
     }
   }, [activeTab, activeConvo?.id]);
@@ -409,7 +429,7 @@ export const ChatDetailsDrawer: React.FC<ChatDetailsDrawerProps> = ({ onStartCal
             <div style={{ textAlign: 'center', color: tokens.textMuted, padding: '24px 0', fontSize: 13 }}>
               Loading media...
             </div>
-          ) : mediaItems.length === 0 ? (
+          ) : !Array.isArray(mediaItems) || mediaItems.length === 0 ? (
             <div style={{ textAlign: 'center', color: tokens.textMuted, padding: '36px 12px' }}>
               <ImageIcon size={32} style={{ marginBottom: 8, opacity: 0.5 }} />
               <p style={{ margin: 0, fontSize: 13 }}>No shared media found</p>
@@ -422,7 +442,7 @@ export const ChatDetailsDrawer: React.FC<ChatDetailsDrawerProps> = ({ onStartCal
                 gap: 8,
               }}
             >
-              {mediaItems.map((item, idx) => (
+              {(Array.isArray(mediaItems) ? mediaItems : []).map((item, idx) => (
                 <a
                   key={idx}
                   href={item.fileUrl}
@@ -438,7 +458,7 @@ export const ChatDetailsDrawer: React.FC<ChatDetailsDrawerProps> = ({ onStartCal
                     border: `1px solid ${tokens.border}`,
                   }}
                 >
-                  {item.fileType.startsWith('video/') ? (
+                  {item.fileType?.startsWith('video/') ? (
                     <video
                       src={item.fileUrl}
                       style={{ width: '100%', height: '100%', objectFit: 'cover' }}
@@ -464,14 +484,14 @@ export const ChatDetailsDrawer: React.FC<ChatDetailsDrawerProps> = ({ onStartCal
             <div style={{ textAlign: 'center', color: tokens.textMuted, padding: '24px 0', fontSize: 13 }}>
               Loading documents...
             </div>
-          ) : docItems.length === 0 ? (
+          ) : !Array.isArray(docItems) || docItems.length === 0 ? (
             <div style={{ textAlign: 'center', color: tokens.textMuted, padding: '36px 12px' }}>
               <FileText size={32} style={{ marginBottom: 8, opacity: 0.5 }} />
               <p style={{ margin: 0, fontSize: 13 }}>No shared documents found</p>
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {docItems.map((doc, idx) => (
+              {(Array.isArray(docItems) ? docItems : []).map((doc, idx) => (
                 <div
                   key={idx}
                   style={{

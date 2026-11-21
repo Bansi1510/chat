@@ -62,6 +62,8 @@ export const App: React.FC = () => {
   const [replyTo, setReplyTo] = useState<Message | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const activeConvoRef = useRef(activeConvo);
+  activeConvoRef.current = activeConvo;
 
   // Auto-scroll to bottom of messages
   const scrollToBottom = () => {
@@ -76,7 +78,17 @@ export const App: React.FC = () => {
   const fetchConversations = async () => {
     try {
       const res = await api.get('/conversations');
-      setConversations(res.data.data);
+      const list = Array.isArray(res.data?.data)
+        ? res.data.data
+        : Array.isArray(res.data)
+        ? res.data
+        : [];
+      setConversations(list);
+
+      // Auto-select first conversation if none selected yet
+      if (!activeConvoRef.current && list.length > 0) {
+        setActiveConvo(list[0]);
+      }
     } catch (err) {
       console.error(err);
     }
@@ -86,16 +98,26 @@ export const App: React.FC = () => {
   const fetchMessages = async (convoId: string) => {
     try {
       const res = await api.get(`/conversations/${convoId}/messages`);
-      setMessages(res.data.data);
+      const list = Array.isArray(res.data?.data)
+        ? res.data.data
+        : Array.isArray(res.data)
+        ? res.data
+        : [];
+      setMessages(list);
 
       // Send read receipt for unread peer messages
-      const unreadIds = res.data.data
+      const unreadIds = list
         .filter((m: Message) => m.senderId !== user?.id && !m.read)
         .map((m: Message) => m.id);
 
       if (unreadIds.length > 0 && socket) {
         socket.emit('message:read', { messageIds: unreadIds, conversationId: convoId });
       }
+
+      // Mark unread as 0 locally
+      setConversations((prev) =>
+        prev.map((c) => (c.id === convoId ? { ...c, unreadCount: 0 } : c))
+      );
     } catch (err) {
       console.error(err);
     }
@@ -109,7 +131,7 @@ export const App: React.FC = () => {
     }
   }, [activeConvo?.id]);
 
-  // Socket.IO Setup
+  // Socket.IO Setup - Stable connection per session
   useEffect(() => {
     if (!accessToken) return;
     fetchConversations();
@@ -125,8 +147,9 @@ export const App: React.FC = () => {
     });
 
     s.on('message:new', (msg: Message) => {
+      const currentConvo = activeConvoRef.current;
       // Append to active conversation if open
-      if (activeConvo && activeConvo.id === msg.conversationId) {
+      if (currentConvo && currentConvo.id === msg.conversationId) {
         setMessages((prev) => {
           if (prev.some((m) => m.id === msg.id || (m.clientMsgId && m.clientMsgId === msg.clientMsgId))) {
             return prev.map((m) => (m.clientMsgId === msg.clientMsgId ? msg : m));
@@ -156,7 +179,7 @@ export const App: React.FC = () => {
                   read: msg.read,
                 },
                 unreadCount:
-                  activeConvo?.id === msg.conversationId || msg.senderId === user?.id
+                  activeConvoRef.current?.id === msg.conversationId || msg.senderId === user?.id
                     ? 0
                     : c.unreadCount + 1,
               }
@@ -178,13 +201,15 @@ export const App: React.FC = () => {
     });
 
     s.on('chat:typing', (data: { conversationId: string; userId: string; isTyping: boolean }) => {
-      if (activeConvo && activeConvo.id === data.conversationId && data.userId !== user?.id) {
+      const currentConvo = activeConvoRef.current;
+      if (currentConvo && currentConvo.id === data.conversationId && data.userId !== user?.id) {
         setPeerTyping(data.isTyping);
       }
     });
 
     s.on('chat:recording', (data: { conversationId: string; userId: string; isRecording: boolean }) => {
-      if (activeConvo && activeConvo.id === data.conversationId && data.userId !== user?.id) {
+      const currentConvo = activeConvoRef.current;
+      if (currentConvo && currentConvo.id === data.conversationId && data.userId !== user?.id) {
         setPeerRecording(data.isRecording);
       }
     });
@@ -219,7 +244,7 @@ export const App: React.FC = () => {
     return () => {
       s.disconnect();
     };
-  }, [accessToken, activeConvo?.id]);
+  }, [accessToken]);
 
   // Call Actions
   const handleStartCall = (type: 'audio' | 'video') => {

@@ -24,25 +24,29 @@ export const AdminDashboardModal: React.FC = () => {
   const loadUsers = async () => {
     try {
       const res = await api.get(`/admin/users?q=${searchQuery}`);
-      setUsers(res.data.data.items);
+      const list = res.data?.data?.items || (Array.isArray(res.data?.data) ? res.data.data : []);
+      setUsers(Array.isArray(list) ? list : []);
     } catch (err) {
       console.error(err);
+      setUsers([]);
     }
   };
 
   const loadPermissions = async () => {
     try {
       const res = await api.get('/admin/permissions');
-      setPermissions(res.data.data);
+      const data = res.data?.data || res.data || {};
+      setPermissions(typeof data === 'object' && !Array.isArray(data) ? data : {});
     } catch (err) {
       console.error(err);
+      setPermissions({});
     }
   };
 
   const loadSettings = async () => {
     try {
       const res = await api.get('/admin/settings');
-      setSettings(res.data.data);
+      setSettings(res.data?.data || res.data || {});
     } catch (err) {
       console.error(err);
     }
@@ -51,9 +55,11 @@ export const AdminDashboardModal: React.FC = () => {
   const loadAudit = async () => {
     try {
       const res = await api.get('/admin/audit-logs');
-      setAuditLogs(res.data.data.items);
+      const list = res.data?.data?.items || (Array.isArray(res.data?.data) ? res.data.data : []);
+      setAuditLogs(Array.isArray(list) ? list : []);
     } catch (err) {
       console.error(err);
+      setAuditLogs([]);
     }
   };
 

@@ -102,12 +102,32 @@ interface WebState {
   logout: () => void;
 }
 
+function getStoredUser(): User | null {
+  try {
+    const raw = localStorage.getItem('user');
+    if (!raw || raw === 'undefined' || raw === 'null') return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function getStoredItem(key: string, fallback: string | null = null): string | null {
+  try {
+    const val = localStorage.getItem(key);
+    if (!val || val === 'undefined' || val === 'null') return fallback;
+    return val;
+  } catch {
+    return fallback;
+  }
+}
+
 export const useWebStore = create<WebState>((set) => ({
-  user: JSON.parse(localStorage.getItem('user') || 'null'),
-  accessToken: localStorage.getItem('token'),
-  refreshToken: localStorage.getItem('refreshToken'),
-  theme: (localStorage.getItem('theme') as ThemeMode) || 'light',
-  language: (localStorage.getItem('language') as Language) || 'en',
+  user: getStoredUser(),
+  accessToken: getStoredItem('token'),
+  refreshToken: getStoredItem('refreshToken'),
+  theme: (getStoredItem('theme', 'dark') as ThemeMode) || 'dark',
+  language: (getStoredItem('language', 'en') as Language) || 'en',
   conversations: [],
   activeConvo: null,
   messages: [],
@@ -118,10 +138,15 @@ export const useWebStore = create<WebState>((set) => ({
   activeModal: 'none',
 
   setUser: (user, accessToken, refreshToken) => {
-    if (user) localStorage.setItem('user', JSON.stringify(user));
-    if (accessToken) localStorage.setItem('token', accessToken);
-    if (refreshToken) localStorage.setItem('refreshToken', refreshToken);
-    set({ user, accessToken: accessToken || null, refreshToken: refreshToken || null });
+    try {
+      if (user) localStorage.setItem('user', JSON.stringify(user));
+      else localStorage.removeItem('user');
+      if (accessToken) localStorage.setItem('token', accessToken);
+      else localStorage.removeItem('token');
+      if (refreshToken) localStorage.setItem('refreshToken', refreshToken);
+      else localStorage.removeItem('refreshToken');
+    } catch {}
+    set({ user: user || null, accessToken: accessToken || null, refreshToken: refreshToken || null });
   },
   setTheme: (theme) => {
     localStorage.setItem('theme', theme);
