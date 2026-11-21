@@ -1,5 +1,6 @@
 import { prisma } from '../../config/prisma';
 import { AppError } from '../../utils/AppError';
+import { getIO } from '../../sockets/socketHandler';
 
 export async function getConversations(userId: string) {
   const participants = await prisma.conversationParticipant.findMany({
@@ -231,7 +232,7 @@ export async function sendMessage(
     });
   }
 
-  return {
+  const result = {
     id: msg.id,
     conversationId: msg.conversationId,
     senderId: msg.senderId,
@@ -242,8 +243,20 @@ export async function sendMessage(
     replyToId: msg.replyToId,
     forwarded: msg.isForwarded,
     expiresAt: msg.expiresAt,
+    permanentDeleteAt: msg.permanentDeleteAt,
     createdAt: msg.createdAt,
   };
+
+  if (!data.isScheduled) {
+    try {
+      const io = getIO();
+      if (io) {
+        io.to(`conversation:${data.conversationId}`).emit('message:new', result);
+      }
+    } catch {}
+  }
+
+  return result;
 }
 
 export async function markAsDelivered(userId: string, messageIds: string[]) {
@@ -301,17 +314,34 @@ export async function deleteMessage(userId: string, messageId: string, forEveryo
 }
 
 export async function reactToMessage(userId: string, messageId: string, emoji: string) {
+  const msg = await prisma.message.findUnique({
+    where: { id: messageId },
+    select: { conversationId: true },
+  });
+  if (!msg) throw AppError.notFound('Message not found');
+
   if (!emoji) {
     await prisma.messageReaction.deleteMany({
       where: { messageId, userId },
     });
-    return;
+  } else {
+    await prisma.messageReaction.upsert({
+      where: { messageId_userId: { messageId, userId } },
+      update: { emoji },
+      create: { messageId, userId, emoji },
+    });
   }
-  await prisma.messageReaction.upsert({
-    where: { messageId_userId: { messageId, userId } },
-    update: { emoji },
-    create: { messageId, userId, emoji },
-  });
+
+  try {
+    const io = getIO();
+    if (io) {
+      io.to(`conversation:${msg.conversationId}`).emit('reaction:new', {
+        messageId,
+        userId,
+        emoji,
+      });
+    }
+  } catch {}
 }
 
 export async function starMessage(userId: string, messageId: string, star: boolean) {

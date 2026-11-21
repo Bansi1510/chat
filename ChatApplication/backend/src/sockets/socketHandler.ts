@@ -51,11 +51,15 @@ export function setupSocketIO(server: HttpServer) {
     socket.join(`user:${userId}`);
 
     // Update user presence
-    await prisma.user.update({
-      where: { id: userId },
-      data: { lastSeenAt: new Date() },
-    });
-    io.emit('user:status', { userId, status: 'online' });
+    try {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { lastSeenAt: new Date() },
+      });
+      io.emit('user:status', { userId, status: 'online' });
+    } catch (err) {
+      logger.warn({ err }, 'Failed to update user presence online');
+    }
 
     // Join user's conversations
     const userConvos = await prisma.conversationParticipant.findMany({
@@ -63,6 +67,12 @@ export function setupSocketIO(server: HttpServer) {
       select: { conversationId: true },
     });
     userConvos.forEach((c) => socket.join(`conversation:${c.conversationId}`));
+
+    // Allow dynamic joining of conversations (e.g. newly created via QR scan)
+    socket.on('conversation:join', (conversationId: string, callback?: () => void) => {
+      socket.join(`conversation:${conversationId}`);
+      if (typeof callback === 'function') callback();
+    });
 
     logger.info(`User connected to socket: ${userId}`);
 
@@ -152,10 +162,14 @@ export function setupSocketIO(server: HttpServer) {
 
     socket.on('disconnect', async () => {
       const now = new Date();
-      await prisma.user.update({
-        where: { id: userId },
-        data: { lastSeenAt: now },
-      });
+      try {
+        await prisma.user.update({
+          where: { id: userId },
+          data: { lastSeenAt: now },
+        });
+      } catch (err) {
+        logger.warn({ err }, 'Failed to update user presence on disconnect');
+      }
       io.emit('user:status', { userId, status: 'offline', lastSeenAt: now });
       logger.info(`User disconnected: ${userId}`);
     });
