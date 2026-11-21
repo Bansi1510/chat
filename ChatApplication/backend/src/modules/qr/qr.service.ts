@@ -1,14 +1,10 @@
 import crypto from 'crypto';
-import { Types } from 'mongoose';
-import { QRToken } from '../../models/QRToken';
-import { Connection } from '../../models/Connection';
-import { Conversation } from '../../models/Conversation';
-import { User } from '../../models/User';
+import { prisma } from '../../config/prisma';
 import { AppError } from '../../utils/AppError';
 import { getSettings } from '../admin/settings.service';
 
-export const getPairKey = (id1: string | Types.ObjectId, id2: string | Types.ObjectId): string => {
-  const [s1, s2] = [id1.toString(), id2.toString()].sort();
+export const getPairKey = (id1: string, id2: string): string => {
+  const [s1, s2] = [id1, id2].sort();
   return `${s1}_${s2}`;
 };
 
@@ -19,12 +15,17 @@ export async function generateQRToken(userId: string) {
   const expirySeconds = settings?.qrExpirySeconds ?? 86400;
 
   // Invalidate previous active tokens for this user
-  await QRToken.updateMany({ userId, revokedAt: null }, { $set: { revokedAt: new Date() } });
+  await prisma.qrToken.updateMany({
+    where: { userId, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
 
-  const record = await QRToken.create({
-    userId,
-    tokenHash,
-    expiresAt: new Date(Date.now() + expirySeconds * 1000),
+  const record = await prisma.qrToken.create({
+    data: {
+      userId,
+      tokenHash,
+      expiresAt: new Date(Date.now() + expirySeconds * 1000),
+    },
   });
 
   return {
@@ -45,51 +46,65 @@ export async function scanQRToken(currentUserId: string, fullToken: string) {
   }
 
   const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-  const qrRecord = await QRToken.findOne({
-    userId: targetUserId,
-    tokenHash,
-    revokedAt: null,
-    expiresAt: { $gt: new Date() },
+  const qrRecord = await prisma.qrToken.findFirst({
+    where: {
+      userId: targetUserId,
+      tokenHash,
+      revokedAt: null,
+      expiresAt: { gt: new Date() },
+    },
   });
 
   if (!qrRecord) {
     throw AppError.badRequest('QR code is invalid or has expired', 'EXPIRED_OR_INVALID_QR');
   }
 
-  const targetUser = await User.findOne({ _id: targetUserId, status: 'active' }).select('username avatarUrl').lean();
+  const targetUser = await prisma.user.findFirst({
+    where: { id: targetUserId, status: 'active' },
+    select: { id: true, username: true, avatarUrl: true },
+  });
   if (!targetUser) {
     throw AppError.notFound('User no longer exists', 'USER_NOT_FOUND');
   }
 
-  const pairKey = getPairKey(currentUserId, targetUserId);
-
-  // Check or create Connection
-  let connection = await Connection.findOne({ pairKey });
-  if (!connection) {
-    connection = await Connection.create({
-      userA: new Types.ObjectId(currentUserId),
-      userB: new Types.ObjectId(targetUserId),
-      pairKey,
-      status: 'active',
-    });
-  } else if (connection.status === 'blocked') {
+  // Check if target user has blocked current user
+  const isBlocked = await prisma.blockedUser.findFirst({
+    where: {
+      OR: [
+        { blockerId: targetUserId, blockedId: currentUserId },
+        { blockerId: currentUserId, blockedId: targetUserId },
+      ],
+    },
+  });
+  if (isBlocked) {
     throw AppError.forbidden('Cannot connect with this user', 'CONNECTION_BLOCKED');
   }
 
-  // Check or create Conversation
-  let conversation = await Conversation.findOne({ pairKey });
+  const pairKey = getPairKey(currentUserId, targetUserId);
+
+  // Check or create Conversation & Participants atomically
+  let conversation = await prisma.conversation.findUnique({
+    where: { pairKey },
+    include: { participants: true },
+  });
+
   if (!conversation) {
-    conversation = await Conversation.create({
-      participants: [new Types.ObjectId(currentUserId), new Types.ObjectId(targetUserId)],
-      pairKey,
+    conversation = await prisma.conversation.create({
+      data: {
+        pairKey,
+        participants: {
+          create: [{ userId: currentUserId }, { userId: targetUserId }],
+        },
+      },
+      include: { participants: true },
     });
   }
 
   return {
-    conversationId: conversation._id.toString(),
-    connectionId: connection._id.toString(),
+    conversationId: conversation.id,
+    connectionId: conversation.id,
     user: {
-      id: targetUser._id.toString(),
+      id: targetUser.id,
       username: targetUser.username,
       avatarUrl: targetUser.avatarUrl || null,
     },
@@ -97,24 +112,32 @@ export async function scanQRToken(currentUserId: string, fullToken: string) {
 }
 
 export async function getUserConnections(userId: string) {
-  const userObjectId = new Types.ObjectId(userId);
-  const connections = await Connection.find({
-    $or: [{ userA: userObjectId }, { userB: userObjectId }],
-    status: 'active',
-  })
-    .populate('userA', 'username avatarUrl')
-    .populate('userB', 'username avatarUrl')
-    .lean();
+  const participants = await prisma.conversationParticipant.findMany({
+    where: { userId },
+    include: {
+      conversation: {
+        include: {
+          participants: {
+            where: { userId: { not: userId } },
+            include: {
+              user: {
+                select: { id: true, username: true, avatarUrl: true, lastSeenAt: true },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
 
-  return connections.map((conn) => {
-    const isUserA = conn.userA._id.toString() === userId;
-    const peer = (isUserA ? conn.userB : conn.userA) as any;
+  return participants.map((p) => {
+    const peer = p.conversation.participants[0]?.user;
     return {
-      connectionId: conn._id.toString(),
-      peerId: peer._id.toString(),
-      username: peer.username,
-      avatarUrl: peer.avatarUrl || null,
-      pairKey: conn.pairKey,
+      connectionId: p.conversation.id,
+      peerId: peer?.id || '',
+      username: peer?.username || '',
+      avatarUrl: peer?.avatarUrl || null,
+      pairKey: p.conversation.pairKey,
     };
   });
 }

@@ -1,46 +1,78 @@
-import React, { useEffect, useState } from 'react';
-import { useWebStore } from './store/useWebStore';
-import { api } from './services/api';
-import { QRCodeSVG } from 'qrcode.react';
+import React, { useEffect, useState, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
+import {
+  MessageSquare,
+  Star,
+  Clock,
+  QrCode,
+  Scan,
+  Settings,
+  Shield,
+  LogOut,
+  Moon,
+  Sun,
+  Phone,
+  Video,
+  Info,
+} from 'lucide-react';
+import { useWebStore, Message } from './store/useWebStore';
+import { useTranslation } from './localization/useTranslation';
+import { lightTokens, darkTokens } from './theme/theme';
+import { api } from './services/api';
+import { Avatar } from './components/Avatar';
+import { AuthScreen } from './features/auth/AuthScreen';
+import { ChatList } from './features/chat/ChatList';
+import { MessageBubble } from './features/chat/MessageBubble';
+import { ChatInputBar } from './features/chat/ChatInputBar';
+import { ChatDetailsDrawer } from './features/chat/ChatDetailsDrawer';
+import { MyQRModal } from './features/qr/MyQRModal';
+import { ScanQRModal } from './features/qr/ScanQRModal';
+import { CallModal } from './features/calling/CallModal';
+import { AdminDashboardModal } from './features/admin/AdminDashboardModal';
+import { SettingsModal } from './features/settings/SettingsModal';
+import { BackupModal } from './features/backup/BackupModal';
+import { ScheduledMessagesModal } from './features/scheduled/ScheduledMessagesModal';
+import { StarredMessagesModal } from './features/starred/StarredMessagesModal';
 
-export const App = () => {
-  const { user, accessToken, setUser, logout } = useWebStore();
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [isRegister, setIsRegister] = useState(false);
-  const [error, setError] = useState('');
+export const App: React.FC = () => {
+  const {
+    user,
+    accessToken,
+    theme,
+    setTheme,
+    setConversations,
+    activeConvo,
+    setActiveConvo,
+    messages,
+    setMessages,
+    activeCall,
+    setActiveCall,
+    isDetailsDrawerOpen,
+    setDetailsDrawerOpen,
+    setActiveModal,
+    logout,
+  } = useWebStore();
 
-  // Main chat state
-  const [conversations, setConversations] = useState<any[]>([]);
-  const [activeConvo, setActiveConvo] = useState<any>(null);
-  const [messages, setMessages] = useState<any[]>([]);
-  const [inputMsg, setInputMsg] = useState('');
-  const [qrToken, setQrToken] = useState('');
-  const [scanInput, setScanInput] = useState('');
-  const [showQRModal, setShowQRModal] = useState(false);
-  const [showScanModal, setShowScanModal] = useState(false);
+  const { t } = useTranslation();
+  const tokens = theme === 'dark' ? darkTokens : lightTokens;
+
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [peerTyping, setPeerTyping] = useState(false);
+  const [peerRecording, setPeerRecording] = useState(false);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
 
-  // Authentication
-  const handleAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    const endpoint = isRegister ? '/auth/register' : '/auth/login';
-    try {
-      const res = await api.post(endpoint, {
-        username,
-        password,
-        deviceName: 'Web Browser',
-      });
-      const { user: u, accessToken: at, refreshToken: rt } = res.data.data;
-      setUser(u, at, rt);
-    } catch (err: any) {
-      setError(err.response?.data?.error?.message || 'Authentication error');
-    }
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom of messages
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // Fetch Conversations
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, peerTyping, peerRecording]);
+
+  // Fetch initial conversations list
   const fetchConversations = async () => {
     try {
       const res = await api.get('/conversations');
@@ -50,37 +82,136 @@ export const App = () => {
     }
   };
 
-  // Fetch Messages for active chat
+  // Fetch messages for active conversation
   const fetchMessages = async (convoId: string) => {
     try {
       const res = await api.get(`/conversations/${convoId}/messages`);
       setMessages(res.data.data);
+
+      // Send read receipt for unread peer messages
+      const unreadIds = res.data.data
+        .filter((m: Message) => m.senderId !== user?.id && !m.read)
+        .map((m: Message) => m.id);
+
+      if (unreadIds.length > 0 && socket) {
+        socket.emit('message:read', { messageIds: unreadIds, conversationId: convoId });
+      }
     } catch (err) {
       console.error(err);
     }
   };
 
-  // Initialize Sockets and Convos on Auth
+  useEffect(() => {
+    if (activeConvo) {
+      fetchMessages(activeConvo.id);
+      setPeerTyping(false);
+      setPeerRecording(false);
+    }
+  }, [activeConvo?.id]);
+
+  // Socket.IO Setup
   useEffect(() => {
     if (!accessToken) return;
     fetchConversations();
 
-    const s = io('http://localhost:4000', {
+    const socketUrl = (import.meta.env.VITE_SOCKET_URL as string) || 'http://localhost:4000';
+    const s = io(socketUrl, {
       auth: { token: accessToken },
       transports: ['websocket'],
     });
 
-    s.on('message:new', (msg: any) => {
+    s.on('connect', () => {
+      console.log('Socket connected:', s.id);
+    });
+
+    s.on('message:new', (msg: Message) => {
+      // Append to active conversation if open
+      if (activeConvo && activeConvo.id === msg.conversationId) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === msg.id || (m.clientMsgId && m.clientMsgId === msg.clientMsgId))) {
+            return prev.map((m) => (m.clientMsgId === msg.clientMsgId ? msg : m));
+          }
+          return [...prev, msg];
+        });
+
+        // Acknowledge read if actively viewing chat
+        if (msg.senderId !== user?.id) {
+          s.emit('message:read', { messageIds: [msg.id], conversationId: msg.conversationId });
+        }
+      }
+
+      // Update conversation last message preview
       setConversations((prev) =>
         prev.map((c) =>
           c.id === msg.conversationId
-            ? { ...c, lastMessage: { ciphertext: msg.ciphertext, createdAt: msg.createdAt } }
+            ? {
+                ...c,
+                lastMessage: {
+                  id: msg.id,
+                  senderId: msg.senderId,
+                  ciphertext: msg.ciphertext,
+                  type: msg.type,
+                  createdAt: msg.createdAt,
+                  delivered: msg.delivered,
+                  read: msg.read,
+                },
+                unreadCount:
+                  activeConvo?.id === msg.conversationId || msg.senderId === user?.id
+                    ? 0
+                    : c.unreadCount + 1,
+              }
             : c
         )
       );
-      if (activeConvo && activeConvo.id === msg.conversationId) {
-        setMessages((prev) => [...prev, msg]);
+    });
+
+    s.on('message:delivered', (data: { messageIds: string[]; userId: string }) => {
+      setMessages((prev) =>
+        prev.map((m) => (data.messageIds.includes(m.id) ? { ...m, delivered: true } : m))
+      );
+    });
+
+    s.on('message:read', (data: { messageIds: string[]; userId: string }) => {
+      setMessages((prev) =>
+        prev.map((m) => (data.messageIds.includes(m.id) ? { ...m, delivered: true, read: true } : m))
+      );
+    });
+
+    s.on('chat:typing', (data: { conversationId: string; userId: string; isTyping: boolean }) => {
+      if (activeConvo && activeConvo.id === data.conversationId && data.userId !== user?.id) {
+        setPeerTyping(data.isTyping);
       }
+    });
+
+    s.on('chat:recording', (data: { conversationId: string; userId: string; isRecording: boolean }) => {
+      if (activeConvo && activeConvo.id === data.conversationId && data.userId !== user?.id) {
+        setPeerRecording(data.isRecording);
+      }
+    });
+
+    s.on('call:incoming', (data: any) => {
+      setActiveCall({
+        peerId: data.callerId,
+        peerUsername: data.callerUsername || 'Peer',
+        callType: data.type || 'audio',
+        state: 'incoming',
+        isMuted: false,
+        isVideoEnabled: data.type === 'video',
+        durationSeconds: 0,
+      });
+    });
+
+    s.on('call:answered', () => {
+      setActiveCall((prev) => (prev ? { ...prev, state: 'connected' } : null));
+    });
+
+    s.on('call:ended', () => {
+      setActiveCall(null);
+    });
+
+    s.on('session:revoked', () => {
+      alert('Your session was revoked because a new device logged in.');
+      logout();
     });
 
     setSocket(s);
@@ -90,431 +221,484 @@ export const App = () => {
     };
   }, [accessToken, activeConvo?.id]);
 
-  useEffect(() => {
-    if (activeConvo) {
-      fetchMessages(activeConvo.id);
-    }
-  }, [activeConvo]);
-
-  // Load My QR
-  const handleOpenQR = async () => {
-    try {
-      const res = await api.get('/qr');
-      setQrToken(res.data.data.rawToken);
-      setShowQRModal(true);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  // Scan & Connect QR
-  const handleConnectQR = async () => {
-    if (!scanInput.trim()) return;
-    try {
-      const res = await api.post('/qr/scan', { token: scanInput.trim() });
-      setShowScanModal(false);
-      setScanInput('');
-      await fetchConversations();
-      setActiveConvo({ id: res.data.data.conversationId, peer: res.data.data.user });
-    } catch (err: any) {
-      alert(err.response?.data?.error?.message || 'Failed to connect');
-    }
-  };
-
-  // Send Message
-  const handleSend = () => {
-    if (!inputMsg.trim() || !activeConvo || !socket) return;
-    const clientMsgId = `${Date.now()}_${Math.random()}`;
-    socket.emit('message:send', {
-      conversationId: activeConvo.id,
-      clientMsgId,
-      ciphertext: inputMsg.trim(),
-      type: 'text',
+  // Call Actions
+  const handleStartCall = (type: 'audio' | 'video') => {
+    if (!activeConvo?.peer || !socket) return;
+    setActiveCall({
+      peerId: activeConvo.peer.id,
+      peerUsername: activeConvo.peer.username,
+      peerAvatar: activeConvo.peer.avatarUrl,
+      callType: type,
+      state: 'outgoing',
+      isMuted: false,
+      isVideoEnabled: type === 'video',
+      durationSeconds: 0,
     });
-    setInputMsg('');
+
+    socket.emit('call:offer', {
+      targetUserId: activeConvo.peer.id,
+      type,
+      offer: { type: 'offer', sdp: 'simulated_dtls_srtp_sdp' },
+      dtlsFingerprint: 'SHA256:7B:4A:...',
+    });
+  };
+
+  const handleAcceptCall = () => {
+    if (!activeCall || !socket) return;
+    setActiveCall((prev) => (prev ? { ...prev, state: 'connected' } : null));
+    socket.emit('call:answer', {
+      targetUserId: activeCall.peerId,
+      answer: { type: 'answer', sdp: 'simulated_answer_sdp' },
+      dtlsFingerprint: 'SHA256:7B:4A:...',
+    });
+  };
+
+  const handleEndCall = () => {
+    if (activeCall && socket) {
+      socket.emit('call:end', { targetUserId: activeCall.peerId });
+      // Log call
+      api.post('/calls/log', {
+        calleeId: activeCall.peerId,
+        callType: activeCall.callType,
+        status: activeCall.durationSeconds > 0 ? 'completed' : 'missed',
+        durationSeconds: activeCall.durationSeconds,
+      }).catch(console.error);
+    }
+    setActiveCall(null);
   };
 
   if (!accessToken) {
-    return (
-      <div style={styles.authWrapper}>
-        <div style={styles.authBox}>
-          <h2 style={{ color: '#075E54', marginBottom: 8 }}>SecureChat Web</h2>
-          <p style={{ color: '#667781', marginBottom: 20 }}>
-            {isRegister ? 'Create an account to start' : 'Sign in to access your conversations'}
-          </p>
-          {error && <div style={styles.authError}>{error}</div>}
-          <form onSubmit={handleAuth}>
-            <input
-              style={styles.input}
-              placeholder="Username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-            />
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-            <button style={styles.primaryBtn} type="submit">
-              {isRegister ? 'Register' : 'Login'}
-            </button>
-          </form>
-          <div style={{ marginTop: 16, textAlign: 'center' }}>
-            <span
-              style={{ color: '#128C7E', cursor: 'pointer', fontSize: 14 }}
-              onClick={() => setIsRegister(!isRegister)}
-            >
-              {isRegister ? 'Already have an account? Login' : "Don't have an account? Register"}
-            </span>
-          </div>
-        </div>
-      </div>
-    );
+    return <AuthScreen />;
   }
 
   return (
-    <div style={styles.appContainer}>
-      {/* Sidebar */}
-      <div style={styles.sidebar}>
-        <div style={styles.sidebarHeader}>
-          <div style={{ fontWeight: 'bold', fontSize: 16 }}>@{user?.username}</div>
-          <div>
-            <button style={styles.headerBtn} onClick={handleOpenQR}>
-              My QR
-            </button>
-            <button style={styles.headerBtn} onClick={() => setShowScanModal(true)}>
-              Scan QR
-            </button>
-            <button style={{ ...styles.headerBtn, background: '#ef4444' }} onClick={logout}>
-              Logout
-            </button>
+    <div
+      style={{
+        display: 'flex',
+        height: '100vh',
+        width: '100vw',
+        backgroundColor: tokens.bgPrimary,
+        color: tokens.textPrimary,
+        overflow: 'hidden',
+        fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+      }}
+    >
+      {/* 1. Left Navigation Rail */}
+      <div
+        style={{
+          width: 68,
+          backgroundColor: tokens.bgSecondary,
+          borderRight: `1px solid ${tokens.border}`,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '16px 0',
+          boxSizing: 'border-box',
+          flexShrink: 0,
+          zIndex: 10,
+        }}
+      >
+        {/* Top brand & nav items */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+          <div style={{ marginBottom: 8 }}>
+            <Avatar name={user?.username || '?'} url={user?.avatarUrl} size={42} />
           </div>
+
+          <button
+            onClick={() => setActiveConvo(null)}
+            title={t('chats')}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              backgroundColor: tokens.primaryAccent + '18',
+              color: tokens.primaryAccent,
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <MessageSquare size={20} />
+          </button>
+
+          <button
+            onClick={() => setActiveModal('starred')}
+            title={t('starred')}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              backgroundColor: 'transparent',
+              color: tokens.textMuted,
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Star size={20} />
+          </button>
+
+          <button
+            onClick={() => setActiveModal('scheduled')}
+            title={t('scheduled')}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              backgroundColor: 'transparent',
+              color: tokens.textMuted,
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Clock size={20} />
+          </button>
+
+          <button
+            onClick={() => setActiveModal('my_qr')}
+            title={t('my_qr')}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              backgroundColor: 'transparent',
+              color: tokens.textMuted,
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <QrCode size={20} />
+          </button>
+
+          <button
+            onClick={() => setActiveModal('scan_qr')}
+            title={t('scan_qr')}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              backgroundColor: 'transparent',
+              color: tokens.textMuted,
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Scan size={20} />
+          </button>
+
+          {/* Super Admin Shield */}
+          {user?.role === 'superadmin' && (
+            <button
+              onClick={() => setActiveModal('admin')}
+              title={t('admin_dashboard')}
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: 12,
+                backgroundColor: '#f59e0b18',
+                color: '#f59e0b',
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Shield size={20} />
+            </button>
+          )}
         </div>
 
-        <div style={styles.conversationList}>
-          {conversations.length === 0 ? (
-            <div style={{ padding: 24, textAlign: 'center', color: '#667781', fontSize: 14 }}>
-              No chats yet. Click "Scan QR" to connect with a peer!
-            </div>
-          ) : (
-            conversations.map((c) => (
-              <div
-                key={c.id}
-                onClick={() => setActiveConvo(c)}
-                style={{
-                  ...styles.convoItem,
-                  backgroundColor: activeConvo?.id === c.id ? '#f0f2f5' : '#ffffff',
-                }}
-              >
-                <div style={styles.avatar}>
-                  {c.peer?.username?.charAt(0).toUpperCase() || '?'}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 'bold', fontSize: 15 }}>{c.peer?.username}</div>
-                  <div style={{ fontSize: 13, color: '#667781', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {c.lastMessage ? c.lastMessage.ciphertext : 'No messages yet'}
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
+        {/* Bottom items: Theme, Settings, Logout */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            title={t('theme')}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: tokens.textMuted,
+              cursor: 'pointer',
+              padding: 8,
+              borderRadius: 10,
+              display: 'flex',
+            }}
+          >
+            {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
+          </button>
+
+          <button
+            onClick={() => setActiveModal('settings')}
+            title={t('settings')}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: tokens.textMuted,
+              cursor: 'pointer',
+              padding: 8,
+              borderRadius: 10,
+              display: 'flex',
+            }}
+          >
+            <Settings size={20} />
+          </button>
+
+          <button
+            onClick={logout}
+            title={t('logout')}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: tokens.danger,
+              cursor: 'pointer',
+              padding: 8,
+              borderRadius: 10,
+              display: 'flex',
+            }}
+          >
+            <LogOut size={20} />
+          </button>
         </div>
       </div>
 
-      {/* Main Chat Panel */}
-      <div style={styles.chatArea}>
+      {/* 2. Column 2: Conversations List Panel */}
+      <div
+        style={{
+          width: 340,
+          flexShrink: 0,
+          height: '100%',
+        }}
+      >
+        <ChatList />
+      </div>
+
+      {/* 3. Column 3: Main Active Conversation Stage */}
+      <div
+        style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          backgroundColor: activeConvo?.wallpaperUrl || tokens.bgPrimary,
+          position: 'relative',
+        }}
+      >
         {activeConvo ? (
           <>
-            <div style={styles.chatHeader}>
-              <div style={styles.avatar}>{activeConvo.peer?.username?.charAt(0).toUpperCase()}</div>
-              <div style={{ marginLeft: 12 }}>
-                <div style={{ fontWeight: 'bold' }}>{activeConvo.peer?.username}</div>
-                <div style={{ fontSize: 12, color: '#10b981' }}>Connected</div>
+            {/* Conversation Header */}
+            <div
+              style={{
+                height: 64,
+                padding: '0 20px',
+                backgroundColor: tokens.bgSecondary,
+                borderBottom: `1px solid ${tokens.border}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexShrink: 0,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <Avatar
+                  name={activeConvo.peer?.username || '?'}
+                  url={activeConvo.peer?.avatarUrl}
+                  size={42}
+                  isOnline={
+                    !!activeConvo.peer?.lastSeenAt &&
+                    new Date().getTime() - new Date(activeConvo.peer.lastSeenAt).getTime() < 120000
+                  }
+                />
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 15, color: tokens.textPrimary }}>
+                    @{activeConvo.peer?.username}
+                  </div>
+                  <div style={{ fontSize: 12, color: tokens.textMuted }}>
+                    {peerRecording
+                      ? t('recording')
+                      : peerTyping
+                      ? t('typing')
+                      : `${t('connected')} • E2EE`}
+                  </div>
+                </div>
+              </div>
+
+              {/* Header Action Buttons */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button
+                  onClick={() => handleStartCall('audio')}
+                  title={t('voice_call')}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: tokens.textSecondary,
+                    cursor: 'pointer',
+                    padding: 8,
+                    borderRadius: 8,
+                    display: 'flex',
+                  }}
+                >
+                  <Phone size={19} />
+                </button>
+
+                <button
+                  onClick={() => handleStartCall('video')}
+                  title={t('video_call')}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: tokens.textSecondary,
+                    cursor: 'pointer',
+                    padding: 8,
+                    borderRadius: 8,
+                    display: 'flex',
+                  }}
+                >
+                  <Video size={19} />
+                </button>
+
+                <button
+                  onClick={() => setDetailsDrawerOpen(!isDetailsDrawerOpen)}
+                  title="Details"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: isDetailsDrawerOpen ? tokens.primaryAccent : tokens.textSecondary,
+                    cursor: 'pointer',
+                    padding: 8,
+                    borderRadius: 8,
+                    display: 'flex',
+                  }}
+                >
+                  <Info size={19} />
+                </button>
               </div>
             </div>
 
-            <div style={styles.messageList}>
-              {messages.map((m) => {
-                const isMe = m.senderId === user?.id;
-                return (
+            {/* Messages Scroll Area */}
+            <div
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '16px 24px',
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              {messages.map((m) => (
+                <MessageBubble
+                  key={m.id || m.clientMsgId}
+                  message={m}
+                  isMe={m.senderId === user?.id}
+                  onReply={(msg) => setReplyTo(msg)}
+                />
+              ))}
+
+              {/* Typing indicator bounce */}
+              {peerTyping && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '6px 0' }}>
                   <div
-                    key={m.id || m.clientMsgId}
                     style={{
-                      display: 'flex',
-                      justifyContent: isMe ? 'flex-end' : 'flex-start',
-                      margin: '6px 0',
+                      backgroundColor: tokens.bgSecondary,
+                      padding: '8px 14px',
+                      borderRadius: 16,
+                      fontSize: 12,
+                      color: tokens.textMuted,
+                      border: `1px solid ${tokens.border}`,
                     }}
                   >
-                    <div
-                      style={{
-                        ...styles.bubble,
-                        backgroundColor: isMe ? '#d9fdd3' : '#ffffff',
-                      }}
-                    >
-                      <div>{m.ciphertext}</div>
-                      <div style={styles.msgTime}>
-                        {new Date(m.createdAt).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </div>
-                    </div>
+                    @{activeConvo.peer?.username} is typing...
                   </div>
-                );
-              })}
+                </div>
+              )}
+
+              <div ref={messagesEndRef} />
             </div>
 
-            <div style={styles.inputRow}>
-              <input
-                style={styles.chatInput}
-                placeholder="Type a message..."
-                value={inputMsg}
-                onChange={(e) => setInputMsg(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              />
-              <button style={styles.sendBtn} onClick={handleSend}>
-                Send
-              </button>
-            </div>
+            {/* Input Bar */}
+            <ChatInputBar
+              socket={socket}
+              replyTo={replyTo}
+              onClearReply={() => setReplyTo(null)}
+            />
           </>
         ) : (
-          <div style={styles.emptyPlaceholder}>
-            <h3>Select a conversation or scan a QR code to start chatting</h3>
+          /* Empty Placeholder Stage */
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 32,
+              textAlign: 'center',
+            }}
+          >
+            <div
+              style={{
+                width: 64,
+                height: 64,
+                borderRadius: 18,
+                backgroundColor: tokens.primaryAccent + '15',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: tokens.primaryAccent,
+                marginBottom: 16,
+              }}
+            >
+              <MessageSquare size={32} />
+            </div>
+            <h3 style={{ margin: '0 0 8px', fontSize: 18, fontWeight: 700, color: tokens.textPrimary }}>
+              {t('app_title')} Web Client
+            </h3>
+            <p style={{ margin: 0, maxWidth: 360, fontSize: 14, color: tokens.textSecondary, lineHeight: 1.5 }}>
+              Select a conversation from the sidebar or click "Scan QR" to connect with a peer.
+            </p>
           </div>
         )}
       </div>
 
-      {/* QR Modals */}
-      {showQRModal && (
-        <div style={styles.modalOverlay}>
-          <div style={styles.modalCard}>
-            <h3>My Connection QR Code</h3>
-            <p style={{ fontSize: 13, color: '#667781', margin: '8px 0 16px' }}>
-              Other users can scan this QR code on mobile or web to chat instantly.
-            </p>
-            <div style={{ padding: 16, background: '#fff', borderRadius: 8 }}>
-              {qrToken ? <QRCodeSVG value={qrToken} size={220} /> : 'Loading...'}
-            </div>
-            <button style={{ ...styles.primaryBtn, marginTop: 16 }} onClick={() => setShowQRModal(false)}>
-              Close
-            </button>
-          </div>
-        </div>
+      {/* 4. Column 4 (Collapsible): Contact Details Drawer */}
+      {isDetailsDrawerOpen && activeConvo && (
+        <ChatDetailsDrawer onStartCall={handleStartCall} />
       )}
 
-      {showScanModal && (
-        <div style={styles.modalOverlay}>
-          <div style={styles.modalCard}>
-            <h3>Connect with QR Token</h3>
-            <p style={{ fontSize: 13, color: '#667781', margin: '8px 0 16px' }}>
-              Paste the peer's raw QR string (format: &lt;userId&gt;:&lt;token&gt;)
-            </p>
-            <input
-              style={styles.input}
-              placeholder="Paste QR token string..."
-              value={scanInput}
-              onChange={(e) => setScanInput(e.target.value)}
-            />
-            <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-              <button style={styles.primaryBtn} onClick={handleConnectQR}>
-                Connect & Chat
-              </button>
-              <button
-                style={{ ...styles.primaryBtn, background: '#8696a0' }}
-                onClick={() => setShowScanModal(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Modals & Overlays */}
+      <MyQRModal />
+      <ScanQRModal />
+      <CallModal
+        onAccept={handleAcceptCall}
+        onReject={handleEndCall}
+        onEnd={handleEndCall}
+        onToggleMic={() =>
+          setActiveCall((prev) => (prev ? { ...prev, isMuted: !prev.isMuted } : null))
+        }
+        onToggleVideo={() =>
+          setActiveCall((prev) =>
+            prev ? { ...prev, isVideoEnabled: !prev.isVideoEnabled } : null
+          )
+        }
+      />
+      <AdminDashboardModal />
+      <SettingsModal />
+      <BackupModal />
+      <ScheduledMessagesModal />
+      <StarredMessagesModal />
     </div>
   );
-};
-
-const styles: Record<string, React.CSSProperties> = {
-  authWrapper: {
-    height: '100vh',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: '#e4e7eb',
-  },
-  authBox: {
-    width: 380,
-    background: '#ffffff',
-    padding: 32,
-    borderRadius: 12,
-    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-  },
-  authError: {
-    padding: 8,
-    background: '#fef2f2',
-    color: '#ef4444',
-    borderRadius: 6,
-    marginBottom: 12,
-    fontSize: 13,
-  },
-  input: {
-    width: '100%',
-    padding: '12px 14px',
-    marginBottom: 14,
-    border: '1px solid #d1d5db',
-    borderRadius: 8,
-    fontSize: 14,
-  },
-  primaryBtn: {
-    width: '100%',
-    padding: '12px',
-    background: '#075E54',
-    color: '#ffffff',
-    border: 'none',
-    borderRadius: 8,
-    fontWeight: 'bold',
-    cursor: 'pointer',
-    fontSize: 14,
-  },
-  appContainer: {
-    display: 'flex',
-    height: '100vh',
-    width: '100vw',
-  },
-  sidebar: {
-    width: 360,
-    borderRight: '1px solid #e9edef',
-    display: 'flex',
-    flexDirection: 'column',
-    background: '#ffffff',
-  },
-  sidebarHeader: {
-    padding: '16px',
-    background: '#f0f2f5',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderBottom: '1px solid #e9edef',
-  },
-  headerBtn: {
-    padding: '6px 10px',
-    marginLeft: 6,
-    background: '#075E54',
-    color: '#ffffff',
-    border: 'none',
-    borderRadius: 6,
-    fontSize: 12,
-    cursor: 'pointer',
-    fontWeight: 600,
-  },
-  conversationList: {
-    flex: 1,
-    overflowY: 'auto',
-  },
-  convoItem: {
-    display: 'flex',
-    alignItems: 'center',
-    padding: '12px 16px',
-    borderBottom: '1px solid #f0f2f5',
-    cursor: 'pointer',
-  },
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    background: '#128C7E',
-    color: '#ffffff',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 'bold',
-    marginRight: 12,
-    flexShrink: 0,
-  },
-  chatArea: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    background: '#efeae2',
-  },
-  chatHeader: {
-    padding: '12px 20px',
-    background: '#f0f2f5',
-    display: 'flex',
-    alignItems: 'center',
-    borderBottom: '1px solid #e9edef',
-  },
-  messageList: {
-    flex: 1,
-    padding: '16px 24px',
-    overflowY: 'auto',
-  },
-  bubble: {
-    maxWidth: '65%',
-    padding: '8px 14px',
-    borderRadius: 8,
-    boxShadow: '0 1px 1px rgba(0,0,0,0.1)',
-    fontSize: 14,
-  },
-  msgTime: {
-    fontSize: 10,
-    color: '#667781',
-    textAlign: 'right',
-    marginTop: 4,
-  },
-  inputRow: {
-    padding: '12px 20px',
-    background: '#f0f2f5',
-    display: 'flex',
-    gap: 12,
-    alignItems: 'center',
-  },
-  chatInput: {
-    flex: 1,
-    padding: '12px 18px',
-    borderRadius: 24,
-    border: 'none',
-    outline: 'none',
-    fontSize: 14,
-  },
-  sendBtn: {
-    padding: '12px 20px',
-    background: '#075E54',
-    color: '#ffffff',
-    border: 'none',
-    borderRadius: 20,
-    fontWeight: 'bold',
-    cursor: 'pointer',
-  },
-  emptyPlaceholder: {
-    flex: 1,
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    color: '#667781',
-  },
-  modalOverlay: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    background: 'rgba(0,0,0,0.5)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 999,
-  },
-  modalCard: {
-    background: '#ffffff',
-    padding: 24,
-    borderRadius: 12,
-    width: 360,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-  },
 };

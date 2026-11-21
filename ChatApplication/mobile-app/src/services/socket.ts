@@ -1,8 +1,8 @@
 import { io, Socket } from 'socket.io-client';
 import { useAppStore } from '../store/useAppStore';
+import { SOCKET_URL } from '../config';
 
 let socket: Socket | null = null;
-const SOCKET_URL = 'http://10.0.2.2:4000';
 
 export function getSocket(): Socket {
   if (!socket) {

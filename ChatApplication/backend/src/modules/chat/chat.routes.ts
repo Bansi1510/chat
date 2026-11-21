@@ -49,6 +49,32 @@ chatRouter.get(
   })
 );
 
+chatRouter.get(
+  '/conversations/:id/media',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    ok(res, await chatService.getSharedMedia(req.auth!.userId, req.params.id as string));
+  })
+);
+
+chatRouter.get(
+  '/conversations/:id/documents',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    ok(res, await chatService.getSharedDocuments(req.auth!.userId, req.params.id as string));
+  })
+);
+
+chatRouter.get(
+  '/messages/search',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const query = (req.query.q as string) || '';
+    const conversationId = req.query.conversationId as string | undefined;
+    ok(res, await chatService.searchMessages(req.auth!.userId, query, conversationId));
+  })
+);
+
 chatRouter.post(
   '/messages',
   requireAuth,
@@ -86,5 +112,43 @@ chatRouter.patch(
   asyncHandler(async (req, res) => {
     await chatService.updateConversationSettings(req.auth!.userId, req.params.id as string, req.body);
     ok(res, { success: true });
+  })
+);
+
+chatRouter.post(
+  '/messages/:id/star',
+  requireAuth,
+  requirePermission('chat.star'),
+  asyncHandler(async (req, res) => {
+    const star = req.body.star !== false;
+    await chatService.starMessage(req.auth!.userId, req.params.id as string, star);
+    ok(res, { starred: star });
+  })
+);
+
+chatRouter.get(
+  '/messages/starred',
+  requireAuth,
+  requirePermission('chat.star'),
+  asyncHandler(async (req, res) => {
+    ok(res, await chatService.getStarredMessages(req.auth!.userId));
+  })
+);
+
+chatRouter.get(
+  '/messages/scheduled',
+  requireAuth,
+  requirePermission('chat.schedule'),
+  asyncHandler(async (req, res) => {
+    ok(res, await chatService.getScheduledMessages(req.auth!.userId));
+  })
+);
+
+chatRouter.delete(
+  '/messages/scheduled/:id',
+  requireAuth,
+  requirePermission('chat.schedule'),
+  asyncHandler(async (req, res) => {
+    ok(res, await chatService.cancelScheduledMessage(req.auth!.userId, req.params.id as string));
   })
 );

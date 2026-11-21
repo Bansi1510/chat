@@ -1,6 +1,5 @@
 import { NextFunction, Request, Response } from 'express';
-import { Session } from '../models/Session';
-import { User } from '../models/User';
+import { prisma } from '../config/prisma';
 import { verifyAccessToken } from '../security/tokens';
 import { AppError } from '../utils/AppError';
 import { isAllowed } from '../modules/permissions/permission.service';
@@ -26,15 +25,20 @@ export async function authenticateToken(token: string): Promise<AuthContext> {
   } catch {
     throw AppError.unauthorized('Invalid or expired token', 'INVALID_TOKEN');
   }
-  const session = await Session.findById(claims.sid).lean();
+  const session = await prisma.authSession.findUnique({
+    where: { id: claims.sid },
+  });
   if (!session || session.revokedAt || session.expiresAt < new Date()) {
     throw AppError.unauthorized('Session is no longer valid', 'SESSION_REVOKED');
   }
-  const user = await User.findById(claims.sub).select('role status').lean();
+  const user = await prisma.user.findUnique({
+    where: { id: claims.sub },
+    select: { id: true, role: true, status: true },
+  });
   if (!user || user.status !== 'active') {
     throw AppError.unauthorized('Account is not active', 'ACCOUNT_INACTIVE');
   }
-  return { userId: String(user._id), sessionId: String(session._id), role: user.role };
+  return { userId: user.id, sessionId: session.id, role: user.role };
 }
 
 export const requireAuth = async (req: Request, _res: Response, next: NextFunction) => {

@@ -1,13 +1,9 @@
-import mongoose from 'mongoose';
-import { env } from './env';
-import { logger } from '../utils/logger';
+import { connectPrisma, disconnectPrisma } from './prisma';
 
 export async function connectDatabase(): Promise<void> {
-  mongoose.set('strictQuery', true);
-  await mongoose.connect(env.MONGO_URI);
-  logger.info('MongoDB connected');
+  await connectPrisma();
 }
 
 export async function disconnectDatabase(): Promise<void> {
-  await mongoose.disconnect();
+  await disconnectPrisma();
 }

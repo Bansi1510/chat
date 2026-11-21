@@ -2,10 +2,10 @@ import { z } from 'zod';
 import { PERMISSION_KEYS } from '../permissions/permissionKeys';
 
 const permissionKey = z.enum(PERMISSION_KEYS);
-const objectId = z.string().regex(/^[a-f0-9]{24}$/i, 'Invalid id');
+const idSchema = z.string().regex(/^[a-f0-9-]{24,36}$/i, 'Invalid id');
 
-export const idParam = z.object({ id: objectId });
-export const userPermissionParams = z.object({ id: objectId, key: permissionKey });
+export const idParam = z.object({ id: idSchema });
+export const userPermissionParams = z.object({ id: idSchema, key: permissionKey });
 export const globalPermissionParams = z.object({ key: permissionKey });
 export const enabledBody = z.object({ enabled: z.boolean() });
 

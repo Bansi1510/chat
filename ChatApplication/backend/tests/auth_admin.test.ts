@@ -1,12 +1,11 @@
+import crypto from 'crypto';
 import express from 'express';
-import mongoose from 'mongoose';
 import request from 'supertest';
 import { createApp } from '../src/app';
 import { connectDatabase, disconnectDatabase } from '../src/config/db';
+import { prisma } from '../src/config/prisma';
 import { errorHandler } from '../src/middleware/errorHandling';
 import { requireAuth, requirePermission } from '../src/middleware/auth';
-import { User } from '../src/models/User';
-import { Session } from '../src/models/Session';
 import { hashPassword } from '../src/security/password';
 
 const app = createApp();
@@ -25,26 +24,37 @@ const reg = (username: string, password = PASS) =>
 const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
 
 async function makeAdmin() {
-  await User.create({
-    username: 'root',
-    usernameKey: 'root',
-    passwordHash: await hashPassword('AdminPass123!'),
-    role: 'superadmin',
+  await prisma.user.create({
+    data: {
+      username: 'root',
+      usernameClean: 'root',
+      passwordHash: await hashPassword('AdminPass123!'),
+      role: 'superadmin',
+      status: 'active',
+    },
   });
   const res = await request(app).post(`${api}/auth/login`).send({ username: 'root', password: 'AdminPass123!' });
   return res.body.data.accessToken as string;
+}
+
+async function cleanupDb() {
+  await prisma.authSession.deleteMany();
+  await prisma.deviceRegistration.deleteMany();
+  await prisma.userPermission.deleteMany();
+  await prisma.globalPermission.deleteMany();
+  await prisma.auditLog.deleteMany();
+  await prisma.applicationSetting.deleteMany();
+  await prisma.user.deleteMany();
 }
 
 beforeAll(async () => {
   await connectDatabase();
 });
 beforeEach(async () => {
-  await mongoose.connection.dropDatabase();
-  await User.syncIndexes();
-  await Session.syncIndexes();
+  await cleanupDb();
 });
 afterAll(async () => {
-  await mongoose.connection.dropDatabase();
+  await cleanupDb();
   await disconnectDatabase();
 });
 
@@ -59,7 +69,7 @@ describe('registration', () => {
   });
   it('stores an argon2id hash, not the password', async () => {
     await reg('alice');
-    const u = await User.findOne({ usernameKey: 'alice' });
+    const u = await prisma.user.findFirst({ where: { usernameClean: 'alice' } });
     expect(u!.passwordHash).toMatch(/^\$argon2id\$/);
   });
   it('rejects duplicate usernames, case-insensitively', async () => {
@@ -71,7 +81,7 @@ describe('registration', () => {
   it('allows only one account under concurrent duplicate registration', async () => {
     const results = await Promise.all([reg('racer'), reg('racer'), reg('racer')]);
     expect(results.filter((r) => r.status === 201)).toHaveLength(1);
-    expect(await User.countDocuments({ usernameKey: 'racer' })).toBe(1);
+    expect(await prisma.user.count({ where: { usernameClean: 'racer' } })).toBe(1);
   });
   it.each([
     ['short username', 'ab', PASS],
@@ -248,9 +258,9 @@ describe('admin', () => {
 
   it('cannot delete the super admin or unknown users', async () => {
     const admin = await makeAdmin();
-    const root = await User.findOne({ role: 'superadmin' });
-    expect((await request(app).delete(`${api}/admin/users/${root!._id}`).set(auth(admin))).status).toBe(403);
-    expect((await request(app).delete(`${api}/admin/users/${new mongoose.Types.ObjectId()}`).set(auth(admin))).status).toBe(404);
+    const root = await prisma.user.findFirst({ where: { role: 'superadmin' } });
+    expect((await request(app).delete(`${api}/admin/users/${root!.id}`).set(auth(admin))).status).toBe(403);
+    expect((await request(app).delete(`${api}/admin/users/${crypto.randomUUID()}`).set(auth(admin))).status).toBe(404);
     expect((await request(app).delete(`${api}/admin/users/not-an-id`).set(auth(admin))).status).toBe(400);
   });
 

@@ -1,0 +1,413 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  user
+  superadmin
+}
+
+enum UserStatus {
+  active
+  suspended
+  deleted
+}
+
+enum Platform {
+  android
+  web
+}
+
+enum MessageType {
+  text
+  image
+  video
+  audio
+  voice
+  document
+  location
+}
+
+enum CallType {
+  audio
+  video
+}
+
+enum CallStatus {
+  completed
+  missed
+  rejected
+  busy
+  failed
+}
+
+model User {
+  id               String       @id @default(uuid())
+  username         String       @unique @db.VarChar(32)
+  usernameClean    String       @unique @map("username_clean") @db.VarChar(32)
+  passwordHash     String       @map("password_hash")
+  role             Role         @default(user)
+  status           UserStatus   @default(active)
+  avatarUrl        String?      @map("avatar_url")
+  failedLoginCount Int          @default(0) @map("failed_login_count")
+  lockUntil        DateTime?    @map("lock_until") @db.Timestamptz
+  lastSeenAt       DateTime?    @map("last_seen_at") @db.Timestamptz
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  deviceRegistrations       DeviceRegistration[]
+  authSessions              AuthSession[]
+  qrTokens                  QrToken[]
+  conversationParticipants  ConversationParticipant[]
+  sentMessages              Message[]                 @relation("SentMessages")
+  messageReceipts           MessageReceipt[]
+  messageReactions          MessageReaction[]
+  messageDeletions          MessageDeletion[]
+  starredMessages           StarredMessage[]
+  blockedUsers              BlockedUser[]             @relation("BlockerUsers")
+  blockedByUsers            BlockedUser[]             @relation("BlockedUsers")
+  outgoingCalls             CallHistory[]             @relation("OutgoingCalls")
+  incomingCalls             CallHistory[]             @relation("IncomingCalls")
+  liveLocationSessions      LiveLocationSession[]
+  userPermissions           UserPermission[]
+  backups                   BackupMetadata[]
+  auditLogs                 AuditLog[]                @relation("ActorAuditLogs")
+  disappearingSettings      DisappearingSetting[]
+
+  @@map("users")
+}
+
+model DeviceRegistration {
+  id                    String    @id @default(uuid())
+  userId                String    @map("user_id")
+  platform              Platform
+  deviceId              String    @map("device_id") @db.VarChar(128)
+  fcmToken              String?   @map("fcm_token")
+  registrationId        Int       @map("registration_id")
+  identityKey           String    @map("identity_key")
+  signedPrekey          String    @map("signed_prekey")
+  signedPrekeySignature String    @map("signed_prekey_signature")
+  isActive              Boolean   @default(true) @map("is_active")
+  lastActiveAt          DateTime  @default(now()) @map("last_active_at") @db.Timestamptz
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prekeys               Prekey[]
+  authSessions          AuthSession[]
+
+  @@unique([userId, platform])
+  @@map("device_registrations")
+}
+
+model Prekey {
+  id                   String             @id @default(uuid())
+  deviceRegistrationId String             @map("device_registration_id")
+  keyId                Int                @map("key_id")
+  publicKey            String             @map("public_key")
+  isConsumed           Boolean            @default(false) @map("is_consumed")
+  createdAt            DateTime           @default(now()) @map("created_at") @db.Timestamptz
+
+  deviceRegistration   DeviceRegistration @relation(fields: [deviceRegistrationId], references: [id], onDelete: Cascade)
+
+  @@index([deviceRegistrationId, isConsumed])
+  @@map("prekeys")
+}
+
+model AuthSession {
+  id                   String             @id @default(uuid())
+  userId               String             @map("user_id")
+  deviceRegistrationId String             @map("device_registration_id")
+  refreshTokenHash     String             @map("refresh_token_hash") @db.VarChar(64)
+  userAgent            String?            @map("user_agent")
+  ipAddress            String?            @map("ip_address") @db.VarChar(45)
+  revokedAt            DateTime?          @map("revoked_at") @db.Timestamptz
+  expiresAt            DateTime           @map("expires_at") @db.Timestamptz
+  createdAt            DateTime           @default(now()) @map("created_at") @db.Timestamptz
+
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceRegistration   DeviceRegistration @relation(fields: [deviceRegistrationId], references: [id], onDelete: Cascade)
+
+  @@index([refreshTokenHash])
+  @@map("auth_sessions")
+}
+
+model QrToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash") @db.VarChar(64)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("qr_tokens")
+}
+
+model Conversation {
+  id                  String                    @id @default(uuid())
+  pairKey             String                    @unique @map("pair_key") @db.VarChar(73)
+  lastMessageAt       DateTime?                 @map("last_message_at") @db.Timestamptz
+  createdAt           DateTime                  @default(now()) @map("created_at") @db.Timestamptz
+
+  participants        ConversationParticipant[]
+  messages            Message[]
+  disappearingSetting DisappearingSetting?
+  liveLocationSessions LiveLocationSession[]
+
+  @@index([lastMessageAt(sort: Desc)])
+  @@map("conversations")
+}
+
+model ConversationParticipant {
+  id               String       @id @default(uuid())
+  conversationId   String       @map("conversation_id")
+  userId           String       @map("user_id")
+  isPinned         Boolean      @default(false) @map("is_pinned")
+  isMuted          Boolean      @default(false) @map("is_muted")
+  wallpaperUrl     String?      @map("wallpaper_url")
+  clearedHistoryAt DateTime?    @map("cleared_history_at") @db.Timestamptz
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz
+
+  conversation     Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@map("conversation_participants")
+}
+
+model Message {
+  id                 String              @id @default(uuid())
+  conversationId     String              @map("conversation_id")
+  senderId           String              @map("sender_id")
+  clientMsgId        String              @map("client_msg_id") @db.VarChar(64)
+  messageType        MessageType         @default(text) @map("message_type")
+  ciphertext         String
+  replyToId          String?             @map("reply_to_id")
+  isForwarded        Boolean             @default(false) @map("is_forwarded")
+  isEdited           Boolean             @default(false) @map("is_edited")
+  deletedForEveryone Boolean             @default(false) @map("deleted_for_everyone")
+  expiresAt          DateTime?           @map("expires_at") @db.Timestamptz
+  permanentDeleteAt  DateTime?           @map("permanent_delete_at") @db.Timestamptz
+  cleanupStatus      String?             @default("pending") @map("cleanup_status") @db.VarChar(16)
+  cleanupAttempts    Int                 @default(0) @map("cleanup_attempts")
+  isScheduled        Boolean             @default(false) @map("is_scheduled")
+  scheduledFor       DateTime?           @map("scheduled_for") @db.Timestamptz
+  dispatchedAt       DateTime?           @map("dispatched_at") @db.Timestamptz
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
+
+  conversation       Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender             User                @relation("SentMessages", fields: [senderId], references: [id], onDelete: Restrict)
+  replyTo            Message?            @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies            Message[]           @relation("MessageReplies")
+  attachments        MessageAttachment[]
+  receipts           MessageReceipt[]
+  reactions          MessageReaction[]
+  deletions          MessageDeletion[]
+  starred            StarredMessage[]
+
+  @@index([conversationId, createdAt(sort: Desc)])
+  @@index([isScheduled, scheduledFor])
+  @@index([expiresAt])
+  @@index([permanentDeleteAt])
+  @@map("messages")
+}
+
+model MessageAttachment {
+  id              String   @id @default(uuid())
+  messageId       String   @map("message_id")
+  fileUrl         String   @map("file_url")
+  fileType        String   @map("file_type") @db.VarChar(32)
+  fileSizeBytes   BigInt   @map("file_size_bytes")
+  fileName        String   @map("file_name")
+  thumbnailUrl    String?  @map("thumbnail_url")
+  durationSeconds Int?     @map("duration_seconds")
+  publicId        String?  @map("public_id")
+  resourceType    String?  @default("auto") @map("resource_type") @db.VarChar(16)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  message         Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@map("message_attachments")
+}
+
+model MessageReceipt {
+  id          String    @id @default(uuid())
+  messageId   String    @map("message_id")
+  userId      String    @map("user_id")
+  deliveredAt DateTime? @map("delivered_at") @db.Timestamptz
+  readAt      DateTime? @map("read_at") @db.Timestamptz
+
+  message     Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([userId, deliveredAt, readAt])
+  @@map("message_receipts")
+}
+
+model MessageReaction {
+  id        String   @id @default(uuid())
+  messageId String   @map("message_id")
+  userId    String   @map("user_id")
+  emoji     String   @db.VarChar(16)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@map("message_reactions")
+}
+
+model MessageDeletion {
+  id        String   @id @default(uuid())
+  messageId String   @map("message_id")
+  userId    String   @map("user_id")
+  deletedAt DateTime @default(now()) @map("deleted_at") @db.Timestamptz
+
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@map("message_deletions")
+}
+
+model StarredMessage {
+  id        String   @id @default(uuid())
+  messageId String   @map("message_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@map("starred_messages")
+}
+
+model DisappearingSetting {
+  conversationId  String       @id @map("conversation_id")
+  durationSeconds Int          @default(0) @map("duration_seconds")
+  updatedById     String       @map("updated_by_id")
+  updatedAt       DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  updatedBy       User         @relation(fields: [updatedById], references: [id])
+
+  @@map("disappearing_settings")
+}
+
+model CallHistory {
+  id              String     @id @default(uuid())
+  callerId        String     @map("caller_id")
+  calleeId        String     @map("callee_id")
+  callType        CallType   @map("call_type")
+  status          CallStatus
+  startedAt       DateTime   @default(now()) @map("started_at") @db.Timestamptz
+  endedAt         DateTime?  @map("ended_at") @db.Timestamptz
+  durationSeconds Int        @default(0) @map("duration_seconds")
+
+  caller          User       @relation("OutgoingCalls", fields: [callerId], references: [id])
+  callee          User       @relation("IncomingCalls", fields: [calleeId], references: [id])
+
+  @@index([callerId, calleeId, startedAt(sort: Desc)])
+  @@map("call_history")
+}
+
+model LiveLocationSession {
+  id              String       @id @default(uuid())
+  conversationId  String       @map("conversation_id")
+  userId          String       @map("user_id")
+  durationSeconds Int          @map("duration_seconds")
+  latitude        Float
+  longitude       Float
+  isActive        Boolean      @default(true) @map("is_active")
+  expiresAt       DateTime     @map("expires_at") @db.Timestamptz
+  updatedAt       DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("live_location_sessions")
+}
+
+model BlockedUser {
+  id        String   @id @default(uuid())
+  blockerId String   @map("blocker_id")
+  blockedId String   @map("blocked_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  blocker   User     @relation("BlockerUsers", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked   User     @relation("BlockedUsers", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@map("blocked_users")
+}
+
+model GlobalPermission {
+  key         String   @id @db.VarChar(64)
+  isEnabled   Boolean  @default(true) @map("is_enabled")
+  description String?
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("global_permissions")
+}
+
+model UserPermission {
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  permissionKey String   @map("permission_key") @db.VarChar(64)
+  isGranted     Boolean  @default(true) @map("is_granted")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionKey])
+  @@map("user_permissions")
+}
+
+model ApplicationSetting {
+  key         String   @id @db.VarChar(64)
+  value       Json
+  description String?
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("application_settings")
+}
+
+model BackupMetadata {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  backupHash  String   @map("backup_hash") @db.VarChar(64)
+  sizeBytes   BigInt   @map("size_bytes")
+  storagePath String   @map("storage_path")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("backup_metadata")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?  @map("actor_id")
+  action     String   @db.VarChar(64)
+  targetType String   @map("target_type") @db.VarChar(32)
+  targetId   String?  @map("target_id") @db.VarChar(64)
+  ipAddress  String?  @map("ip_address") @db.VarChar(45)
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  actor      User?    @relation("ActorAuditLogs", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt(sort: Desc)])
+  @@map("audit_logs")
+}

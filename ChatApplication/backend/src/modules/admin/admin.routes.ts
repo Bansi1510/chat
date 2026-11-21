@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requireAuth, requireSuperAdmin } from '../../middleware/auth';
 import { validate } from '../../middleware/errorHandling';
-import { User } from '../../models/User';
+import { prisma } from '../../config/prisma';
 import { AppError } from '../../utils/AppError';
 import { asyncHandler, ok } from '../../utils/http';
 import {
@@ -50,7 +50,10 @@ adminRouter.get(
   '/admin/users/:id/permissions',
   validate(idParam, 'params'),
   asyncHandler(async (req, res) => {
-    const user = await User.findById(req.params.id).select('role status').lean();
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id as string },
+      select: { role: true, status: true },
+    });
     if (!user || user.status !== 'active') throw AppError.notFound('User not found');
     ok(res, await getEffectivePermissions(req.params.id as string, user.role));
   }),
@@ -62,7 +65,10 @@ adminRouter.put(
   validate(enabledBody),
   asyncHandler(async (req, res) => {
     const { id, key } = req.params as { id: string; key: PermissionKey };
-    const user = await User.findById(id).select('status').lean();
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: { status: true },
+    });
     if (!user || user.status !== 'active') throw AppError.notFound('User not found');
     await setUserPermission(id, key, req.body.enabled);
     await recordAudit(req.auth!.userId, 'permission.user.set', { type: 'user', id }, { key, enabled: req.body.enabled });

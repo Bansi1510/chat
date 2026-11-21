@@ -1,10 +1,9 @@
 import axios from 'axios';
 import { useAppStore } from '../store/useAppStore';
-
-const BASE_URL = 'http://10.0.2.2:4000/api/v1'; // Standard Android emulator loopback host, easily configurable
+import { API_BASE_URL } from '../config';
 
 export const api = axios.create({
-  baseURL: BASE_URL,
+  baseURL: API_BASE_URL,
   timeout: 15000,
   headers: {
     'Content-Type': 'application/json',
@@ -28,7 +27,7 @@ api.interceptors.response.use(
       const refreshToken = useAppStore.getState().refreshToken;
       if (refreshToken) {
         try {
-          const res = await axios.post(`${BASE_URL}/auth/refresh`, { refreshToken });
+          const res = await axios.post(`${API_BASE_URL}/auth/refresh`, { refreshToken });
           const { accessToken, refreshToken: nextRefresh } = res.data.data;
           useAppStore.getState().setUser(useAppStore.getState().user, accessToken, nextRefresh);
           originalRequest.headers.Authorization = `Bearer ${accessToken}`;

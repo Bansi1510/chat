@@ -11,6 +11,7 @@ import { MyQRScreen } from '../screens/MyQRScreen';
 import { ScanQRScreen } from '../screens/ScanQRScreen';
 import { AdminScreen } from '../screens/AdminScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
+import { CallScreen } from '../screens/CallScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -33,6 +34,7 @@ export const RootNavigator = () => {
             <Stack.Screen name="ScanQRScreen" component={ScanQRScreen} />
             <Stack.Screen name="AdminScreen" component={AdminScreen} />
             <Stack.Screen name="SettingsScreen" component={SettingsScreen} />
+            <Stack.Screen name="CallScreen" component={CallScreen} />
           </>
         )}
       </Stack.Navigator>

@@ -1,8 +1,7 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import { authenticateToken } from '../middleware/auth';
-import { User } from '../models/User';
-import { Conversation } from '../models/Conversation';
+import { prisma } from '../config/prisma';
 import * as chatService from '../modules/chat/chat.service';
 import { logger } from '../utils/logger';
 
@@ -14,6 +13,12 @@ interface AuthenticatedSocket extends Socket {
   };
 }
 
+let ioInstance: SocketIOServer | null = null;
+
+export function getIO(): SocketIOServer | null {
+  return ioInstance;
+}
+
 export function setupSocketIO(server: HttpServer) {
   const io = new SocketIOServer(server, {
     cors: {
@@ -21,6 +26,7 @@ export function setupSocketIO(server: HttpServer) {
       methods: ['GET', 'POST'],
     },
   });
+  ioInstance = io;
 
   // Socket Authentication Middleware
   io.use(async (socket: AuthenticatedSocket, next) => {
@@ -32,7 +38,7 @@ export function setupSocketIO(server: HttpServer) {
       const auth = await authenticateToken(token);
       socket.authContext = auth;
       next();
-    } catch (err: any) {
+    } catch {
       next(new Error('INVALID_TOKEN'));
     }
   });
@@ -45,12 +51,18 @@ export function setupSocketIO(server: HttpServer) {
     socket.join(`user:${userId}`);
 
     // Update user presence
-    await User.findByIdAndUpdate(userId, { lastSeenAt: new Date() });
+    await prisma.user.update({
+      where: { id: userId },
+      data: { lastSeenAt: new Date() },
+    });
     io.emit('user:status', { userId, status: 'online' });
 
     // Join user's conversations
-    const userConvos = await Conversation.find({ participants: userId }).select('_id').lean();
-    userConvos.forEach((c) => socket.join(`conversation:${c._id.toString()}`));
+    const userConvos = await prisma.conversationParticipant.findMany({
+      where: { userId },
+      select: { conversationId: true },
+    });
+    userConvos.forEach((c) => socket.join(`conversation:${c.conversationId}`));
 
     logger.info(`User connected to socket: ${userId}`);
 
@@ -100,18 +112,20 @@ export function setupSocketIO(server: HttpServer) {
     });
 
     // WebRTC E2EE Signalling
-    socket.on('call:offer', (data: { targetUserId: string; offer: any; type: 'audio' | 'video' }) => {
+    socket.on('call:offer', (data: { targetUserId: string; offer: any; type: 'audio' | 'video'; dtlsFingerprint?: string }) => {
       socket.to(`user:${data.targetUserId}`).emit('call:incoming', {
         callerId: userId,
         offer: data.offer,
         type: data.type,
+        dtlsFingerprint: data.dtlsFingerprint,
       });
     });
 
-    socket.on('call:answer', (data: { targetUserId: string; answer: any }) => {
+    socket.on('call:answer', (data: { targetUserId: string; answer: any; dtlsFingerprint?: string }) => {
       socket.to(`user:${data.targetUserId}`).emit('call:answered', {
         calleeId: userId,
         answer: data.answer,
+        dtlsFingerprint: data.dtlsFingerprint,
       });
     });
 
@@ -126,9 +140,23 @@ export function setupSocketIO(server: HttpServer) {
       socket.to(`user:${data.targetUserId}`).emit('call:ended', { fromUserId: userId });
     });
 
+    // Live Location streaming
+    socket.on('location:stream', (data: { conversationId: string; latitude: number; longitude: number }) => {
+      socket.to(`conversation:${data.conversationId}`).emit('location:update', {
+        conversationId: data.conversationId,
+        userId,
+        latitude: data.latitude,
+        longitude: data.longitude,
+      });
+    });
+
     socket.on('disconnect', async () => {
-      await User.findByIdAndUpdate(userId, { lastSeenAt: new Date() });
-      io.emit('user:status', { userId, status: 'offline', lastSeenAt: new Date() });
+      const now = new Date();
+      await prisma.user.update({
+        where: { id: userId },
+        data: { lastSeenAt: now },
+      });
+      io.emit('user:status', { userId, status: 'offline', lastSeenAt: now });
       logger.info(`User disconnected: ${userId}`);
     });
   });
